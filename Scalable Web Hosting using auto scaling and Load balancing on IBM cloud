@@ -1,0 +1,98 @@
+provider "ibm" {
+  region           = "us-south"
+}
+
+# Create a VPC
+resource "ibm_is_vpc" "my_vpc" {
+  name = "my-scalable-vpc"
+}
+
+# Create a Subnet
+resource "ibm_is_subnet" "my_subnet" {
+  name = "my-subnet"
+  vpc  = ibm_is_vpc.my_vpc.id
+  zone = "us-south-1"
+  cidr = "10.240.0.0/24"
+}
+
+# Create a Security Group
+resource "ibm_is_security_group" "my_sg" {
+  name = "web-security-group"
+  vpc  = ibm_is_vpc.my_vpc.id
+}
+
+# Allow HTTP, HTTPS & SSH traffic
+resource "ibm_is_security_group_rule" "allow_http" {
+  group     = ibm_is_security_group.my_sg.id
+  direction = "inbound"
+  remote    = "0.0.0.0/0"
+  tcp {
+    port_min = 80
+    port_max = 80
+  }
+}
+
+resource "ibm_is_security_group_rule" "allow_ssh" {
+  group     = ibm_is_security_group.my_sg.id
+  direction = "inbound"
+  remote    = "0.0.0.0/0"
+  tcp {
+    port_min = 22
+    port_max = 22
+  }
+}
+
+# Load Balancer
+resource "ibm_is_lb" "my_lb" {
+  name     = "my-load-balancer"
+  vpc      = ibm_is_vpc.my_vpc.id
+  subnets  = [ibm_is_subnet.my_subnet.id]
+  type     = "public"
+}
+
+# Auto-Scaling Group
+resource "ibm_is_instance_group" "auto_scale_group" {
+  name   = "auto-scaling-group"
+  vpc    = ibm_is_vpc.my_vpc.id
+  zone   = "us-south-1"
+  subnet = ibm_is_subnet.my_subnet.id
+
+  instance_template {
+    name       = "web-server-template"
+    profile    = "bx2-2x8"
+    image      = "ibm-ubuntu-22-04-1-minimal-amd64-2"
+    vpc        = ibm_is_vpc.my_vpc.id
+    security_groups = [ibm_is_security_group.my_sg.id]
+    user_data = <<EOF
+#!/bin/bash
+apt update -y
+apt install -y apache2
+systemctl start apache2
+systemctl enable apache2
+EOF
+  }
+
+  min_instance_count = 2
+  max_instance_count = 5
+
+  load_balancer {
+    id            = ibm_is_lb.my_lb.id
+    target_pools  = ["http"]
+    health_checks = ["http"]
+  }
+
+  auto_scale {
+    scale_out_cooldown = 120
+    scale_in_cooldown  = 300
+    policies {
+      name  = "cpu-policy"
+      type  = "cpu"
+      direction = "increase"
+      threshold = 70
+    }
+  }
+}
+
+output "load_balancer_url" {
+  value = ibm_is_lb.my_lb.hostname
+}
